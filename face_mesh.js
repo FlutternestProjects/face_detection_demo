@@ -211,18 +211,19 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
     
     if (!noseTip || !noseBridge || !leftEye || !rightEye || !topForehead || !bottomChin) {
       console.error("Missing key facial landmarks");
+      lastDetectedPosition = "center"; // Reset to center if landmarks are missing
       return null;
     }
 
-    // Calculate face normal vector using multiple points
+    // Account for mirrored video: flip x-coordinates
     const v1 = {
-      x: rightEye.x - leftEye.x,
+      x: -(rightEye.x - leftEye.x), // Invert x for mirroring
       y: rightEye.y - leftEye.y,
       z: rightEye.z - leftEye.z
     };
     
     const v2 = {
-      x: noseTip.x - noseBridge.x,
+      x: -(noseTip.x - noseBridge.x), // Invert x for mirroring
       y: noseTip.y - noseBridge.y,
       z: noseTip.z - noseBridge.z
     };
@@ -236,29 +237,41 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
 
     // Normalize the vector
     const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+    if (length === 0) {
+      console.error("Invalid normal vector");
+      lastDetectedPosition = "center";
+      return null;
+    }
     normal.x /= length;
     normal.y /= length;
     normal.z /= length;
 
     const forwardProjection = normal.z;
-    const sideProjection = normal.x;
+    let sideProjection = normal.x; // Already accounts for mirroring due to v1, v2 adjustments
 
-    // Define strict thresholds for extreme neck movements
-    const LEFT_THRESHOLD = 0.7;  // Extreme right movement
-    const RIGHT_THRESHOLD = -0.7; // Extreme left movement
-    const STABILITY_THRESHOLD = 0.05; // Minimum change needed to switch states
+    // Adjusted thresholds for more sensitive detection
+    const LEFT_THRESHOLD = 0.5;  // Less extreme right movement
+    const RIGHT_THRESHOLD = -0.5; // Less extreme left movement
+    const STABILITY_THRESHOLD = 0.1; // Increased for better stability
     
+    // Simple temporal smoothing (average over last few frames)
+    const SMOOTHING_WINDOW = 3;
+    window.sideProjectionHistory = window.sideProjectionHistory || [];
+    window.sideProjectionHistory.push(sideProjection);
+    if (window.sideProjectionHistory.length > SMOOTHING_WINDOW) {
+      window.sideProjectionHistory.shift();
+    }
+    sideProjection = window.sideProjectionHistory.reduce((a, b) => a + b, 0) / window.sideProjectionHistory.length;
+
     // Determine face position with stability check
     let position;
     if (sideProjection > LEFT_THRESHOLD) {
-      // Only switch to right if we're not already in right or if the change is significant
       if (lastDetectedPosition !== "right" || Math.abs(sideProjection - LEFT_THRESHOLD) > STABILITY_THRESHOLD) {
         position = "right";
       } else {
         position = lastDetectedPosition;
       }
     } else if (sideProjection < RIGHT_THRESHOLD) {
-      // Only switch to left if we're not already in left or if the change is significant
       if (lastDetectedPosition !== "left" || Math.abs(sideProjection - RIGHT_THRESHOLD) > STABILITY_THRESHOLD) {
         position = "left";
       } else {
@@ -271,7 +284,7 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
     // Update the last detected position
     lastDetectedPosition = position;
 
-    // Calculate multiple face measurements for robust distance detection
+    // Calculate face measurements for distance detection
     const faceWidth = Math.abs(rightCheek.x - leftCheek.x);
     const faceHeight = Math.abs(topForehead.y - bottomChin.y);
     const eyeDistance = Math.sqrt(
@@ -285,27 +298,15 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
       Math.pow(rightJaw.z - leftJaw.z, 2)
     );
 
-    // Use a weighted average of multiple measurements
-    // This makes the distance detection more robust during head rotation
     const weightedSize = (
-      (faceHeight * 0.4) +  // Height is less affected by rotation
-      (eyeDistance * 0.3) + // Eye distance provides good stability
-      (jawWidth * 0.3)      // Jaw width helps with side angles
+      (faceHeight * 0.4) +
+      (eyeDistance * 0.3) +
+      (jawWidth * 0.3)
     );
 
-    // console.log("Distance metrics:", {
-    //   faceWidth,
-    //   faceHeight,
-    //   eyeDistance,
-    //   jawWidth,
-    //   weightedSize
-    // });
-
-    // Adjusted thresholds for the weighted measurement
     const MIN_WEIGHTED_SIZE = 0.25;
     const MAX_WEIGHTED_SIZE = 0.45;
     
-    // Enhanced distance status using weighted size
     let distanceStatus;
     if (weightedSize < MIN_WEIGHTED_SIZE) {
       distanceStatus = "too_far";
@@ -317,25 +318,23 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
 
     // Calculate face tilt angle
     const deltaY = rightEye.y - leftEye.y;
-    const deltaX = rightEye.x - leftEye.x;
+    const deltaX = -(rightEye.x - leftEye.x); // Adjust for mirroring
     const tiltAngle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
     const isLevel = Math.abs(tiltAngle) < TILT_THRESHOLD;
     
-    // Calculate bounding box
+    // Calculate bounding box (already adjusted for mirroring)
     const minX = Math.min(...landmarks.map(l => l.x)) * imageWidth;
     const maxX = Math.max(...landmarks.map(l => l.x)) * imageWidth;
     const minY = Math.min(...landmarks.map(l => l.y)) * imageHeight;
     const maxY = Math.max(...landmarks.map(l => l.y)) * imageHeight;
     
-    // Adjust bounding box for mirrored display
     const boundingBox = {
-      left: imageWidth - maxX, // Flip horizontal position
+      left: imageWidth - maxX,
       top: minY,
       width: maxX - minX,
       height: maxY - minY
     };
     
-    // Log detailed information for debugging
     if (debug) {
       console.log(`Face Detection Details:
       - forwardProjection: ${forwardProjection.toFixed(4)}
@@ -344,6 +343,7 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
       - weightedSize: ${weightedSize.toFixed(3)}
       - distanceStatus: ${distanceStatus}
       - tiltAngle: ${tiltAngle.toFixed(2)}°
+      - raw leftEye.x: ${leftEye.x}, rightEye.x: ${rightEye.x}
       `);
     }
     
@@ -361,10 +361,10 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
     };
   } catch (error) {
     console.error("Error in calculateFacePosition:", error);
+    lastDetectedPosition = "center";
     return null;
   }
 }
-
 /**
  * Clean up resources
  */
