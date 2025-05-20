@@ -10,6 +10,7 @@ let results = null;
 let camera = null;
 let isProcessing = false;
 let debug = false;
+let lastDetectedPosition = "center"; // Add state variable for position tracking
 
 // Face mesh thresholds for detection quality
 const MIN_DETECTION_CONFIDENCE = 0.5;
@@ -242,19 +243,33 @@ function calculateFacePosition(landmarks, imageWidth, imageHeight) {
     const forwardProjection = normal.z;
     const sideProjection = normal.x;
 
-    // Define separate thresholds for left and right
-    const LEFT_THRESHOLD = 0.7;  // Requires strong left rotation
-    const RIGHT_THRESHOLD = -0.7; // Requires strong right rotation
-
-    // Determine face position with separate thresholds
+    // Define strict thresholds for extreme neck movements
+    const LEFT_THRESHOLD = 0.7;  // Extreme right movement
+    const RIGHT_THRESHOLD = -0.7; // Extreme left movement
+    const STABILITY_THRESHOLD = 0.05; // Minimum change needed to switch states
+    
+    // Determine face position with stability check
     let position;
     if (sideProjection > LEFT_THRESHOLD) {
-      position = "right"; // Swapped from left to right due to mirroring
+      // Only switch to right if we're not already in right or if the change is significant
+      if (lastDetectedPosition !== "right" || Math.abs(sideProjection - LEFT_THRESHOLD) > STABILITY_THRESHOLD) {
+        position = "right";
+      } else {
+        position = lastDetectedPosition;
+      }
     } else if (sideProjection < RIGHT_THRESHOLD) {
-      position = "left";  // Swapped from right to left due to mirroring
+      // Only switch to left if we're not already in left or if the change is significant
+      if (lastDetectedPosition !== "left" || Math.abs(sideProjection - RIGHT_THRESHOLD) > STABILITY_THRESHOLD) {
+        position = "left";
+      } else {
+        position = lastDetectedPosition;
+      }
     } else {
       position = "center";
     }
+
+    // Update the last detected position
+    lastDetectedPosition = position;
 
     // Calculate multiple face measurements for robust distance detection
     const faceWidth = Math.abs(rightCheek.x - leftCheek.x);
@@ -373,6 +388,7 @@ function disposeFaceMesh() {
   videoElement = null;
   results = null;
   isProcessing = false;
+  lastDetectedPosition = "center"; // Reset position state
 }
 
 // Export functions for Dart interop
